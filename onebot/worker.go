@@ -59,7 +59,8 @@ func SendWechatMsg(m *SendMsg) {
 			Error("构建文本protobuf失败", "err", err)
 			return
 		}
-		result := fridaScript.ExportsCall("triggerSendTextMessage", currTaskId, targetId, m.Content, m.AtUser, protoHex)
+		payloadHex := BuildSendPayload(currTaskId, "text")
+		result := fridaScript.ExportsCall("triggerSendTextMessage", currTaskId, targetId, m.Content, m.AtUser, protoHex, payloadHex)
 		Info("📩 发送文本任务执行结果", "result", result, "task_id", currTaskId, "target_id", targetId, "at_user", m.AtUser)
 		if result != "1" {
 			Error("发送文本失败", "task_id", currTaskId, "target_id", targetId, "result", result)
@@ -84,7 +85,8 @@ func SendWechatMsg(m *SendMsg) {
 			Error("构建图片protobuf失败", "err", err)
 			return
 		}
-		result := fridaScript.ExportsCall("triggerSendImgMessage", currTaskId, myWechatId, targetId, protoHex)
+		payloadHex := BuildSendPayload(currTaskId, "img")
+		result := fridaScript.ExportsCall("triggerSendImgMessage", currTaskId, myWechatId, targetId, protoHex, payloadHex)
 		Info("📩 发送图片任务执行结果", "result", result, "task_id", currTaskId, "wechat_id", myWechatId, "target_id", targetId)
 		if result != "1" {
 			Error("上传图片失败", "task_id", currTaskId, "target_id", targetId, "result", result)
@@ -128,7 +130,8 @@ func SendWechatMsg(m *SendMsg) {
 			Error("构建视频protobuf失败", "err", err)
 			return
 		}
-		result := fridaScript.ExportsCall("triggerSendVideoMessage", currTaskId, myWechatId, targetId, protoHex)
+		payloadHex := BuildSendPayload(currTaskId, "video")
+		result := fridaScript.ExportsCall("triggerSendVideoMessage", currTaskId, myWechatId, targetId, protoHex, payloadHex)
 		Info("📩 发送视频任务执行结果", "result", result, "task_id", currTaskId, "wechat_id", myWechatId, "target_id", targetId, "duration", duration, "size", videoSize)
 		if result != "1" {
 			Error("发送视频失败", "task_id", currTaskId, "target_id", targetId, "result", result)
