@@ -3,6 +3,8 @@
 	"req2bufEnterAddr": "0x39f18e0",
 	"req2bufExitAddr": "0x39f29f4",
 	"buf2RespAddr": "0x3a17308",
+	"blrX8Addr": "0x39F1960",
+	"autoBufferWriteFunc": "0x3A18970",
 
 	"uploadImageAddr": "0x4d6c8f8",
 	"cndOnCompleteAddr": "0x39adf14",
@@ -14,17 +16,5 @@
 	"startDownloadMedia": "0x4d6d560",
 	"downloadImagAddr": "0x4e90054",
 	"downloadFileAddr": "0x4e2ef8c",
-	"downloadVideoAddr": "0x4e48d6c",
-
-	"textCallbackFuncAddr": "0x2694200",
-	"sendMessageCallbackFunc": "0x8c714e0",
-	"imageCallbackFuncAddr": "0x268ABC4",
-	"imgMessageCallbackFunc": "0x8c70fa8",
-	"videoCallbackFuncAddr": "0x26FA170",
-	"videoMessageCallbackFunc": "0x8c73d58",
-	"replyCallbackFuncAddr": "0x2628C10",
-	"replyMessageCallbackFunc": "0x8c6e668",
-	"voiceCallbackFuncAddr": "0x31CB034",
-	"voiceMessageCallbackFunc": "0x8cb3730"
+	"downloadVideoAddr": "0x4e48d6c"
 }
-
