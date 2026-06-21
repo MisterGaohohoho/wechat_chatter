@@ -168,7 +168,7 @@ function readUtf8StringIfReadable(addr) {
         if (!isReadablePointer(addr)) {
             return "";
         }
-        return addr.readUtf8String();
+        return addr.readUtf8String(4096);
     } catch (e) {
         return "";
     }
@@ -186,9 +186,10 @@ function readByteArrayIfReadable(addr, len) {
 }
 
 function sendDownloadChunks(dataPtr, dataLen, fileId, cdnUrl) {
-    if (!fileId || !cdnUrl || dataLen <= 0) {
+    if (!cdnUrl || dataLen <= 0) {
         return;
     }
+    const safeFileId = fileId || "";
 
     for (let offset = 0; offset < dataLen; offset += DOWNLOAD_CHUNK_BYTES) {
         const chunkLen = Math.min(DOWNLOAD_CHUNK_BYTES, dataLen - offset);
@@ -201,7 +202,7 @@ function sendDownloadChunks(dataPtr, dataLen, fileId, cdnUrl) {
         send({
             type: "download",
             media: Array.from(uint8Array),
-            file_id: fileId,
+            file_id: safeFileId,
             cdn_url: cdnUrl,
         });
     }

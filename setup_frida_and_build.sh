@@ -48,4 +48,4 @@ echo "⚙️ CGO_LDFLAGS=$CGO_LDFLAGS"
 
 go build -v -o onebot .
 
-echo "🎉 编译成功！二进制文件位置: $(pwd)/onebot/onebot"
+echo "🎉 编译成功！二进制文件位置: $(pwd)/onebot"
