@@ -61,6 +61,199 @@ func SaveBase64Image(base64Data string) (string, string, error) {
 	return targetPath, md5Str, nil
 }
 
+// SaveVoiceFile 解码base64音频数据并保存为文件（不追加salt，保持二进制完整性）
+// 返回原始字节、文件路径、错误
+func SaveVoiceFile(base64Data string) ([]byte, string, error) {
+	rawContents := base64Data
+	if strings.HasPrefix(base64Data, "base64://") {
+		rawContents = strings.TrimPrefix(base64Data, "base64://")
+	} else if idx := strings.Index(base64Data, ","); idx != -1 {
+		rawContents = base64Data[idx+1:]
+	}
+
+	data, err := base64.StdEncoding.DecodeString(rawContents)
+	if err != nil {
+		return nil, "", fmt.Errorf("base64 decode failed: %v", err)
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randomNumber := r.Intn(1000)
+	timestamp := time.Now().Unix()
+	ext := DetectFileFormat(data)
+	fileName := fmt.Sprintf("%d_%d.%s", randomNumber, timestamp, ext)
+	targetPath := config.ImagePath + fileName
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, "", fmt.Errorf("create directory failed: %v", err)
+	}
+
+	err = os.WriteFile(targetPath, data, 0666)
+	if err != nil {
+		return nil, "", fmt.Errorf("write file failed: %v", err)
+	}
+	os.Chmod(targetPath, 0666)
+
+	return data, targetPath, nil
+}
+
+// SaveBase64File 解码 base64 数据并以指定扩展名保存文件，返回文件路径和 MD5
+func SaveBase64File(base64Data string, ext string) (string, string, error) {
+	rawContents := base64Data
+	if strings.HasPrefix(base64Data, "base64://") {
+		rawContents = strings.TrimPrefix(base64Data, "base64://")
+	} else if idx := strings.Index(base64Data, ","); idx != -1 {
+		rawContents = base64Data[idx+1:]
+	}
+
+	data, err := base64.StdEncoding.DecodeString(rawContents)
+	if err != nil {
+		return "", "", fmt.Errorf("base64 decode failed: %v", err)
+	}
+
+	// 如果没有传入扩展名，尝试自动检测
+	if ext == "" {
+		ext = DetectFileFormat(data)
+		if ext == "unknown" {
+			// fallback: 用 MIME 类型推断
+			mimeType := http.DetectContentType(data)
+			ext = mimeToExt(mimeType)
+		}
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	randomNumber := r.Intn(1000)
+	timestamp := time.Now().Unix()
+	fileName := fmt.Sprintf("%d_%d.%s", randomNumber, timestamp, ext)
+	targetPath := config.ImagePath + fileName
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", "", fmt.Errorf("create directory failed: %v", err)
+	}
+
+	err = os.WriteFile(targetPath, data, 0666)
+	if err != nil {
+		return "", "", fmt.Errorf("write file failed: %v", err)
+	}
+	os.Chmod(targetPath, 0666)
+
+	md5Str, err := GetFileMD5(targetPath)
+	if err != nil {
+		return "", "", fmt.Errorf("get file md5 failed: %v", err)
+	}
+
+	return targetPath, md5Str, nil
+}
+
+// mimeToExt 将 MIME 类型转换为文件扩展名
+func mimeToExt(mimeType string) string {
+	if idx := strings.Index(mimeType, ";"); idx != -1 {
+		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+	switch mimeType {
+	case "text/plain":
+		return "txt"
+	case "text/html":
+		return "html"
+	case "text/xml", "application/xml":
+		return "xml"
+	case "application/json":
+		return "json"
+	case "application/pdf":
+		return "pdf"
+	case "application/zip":
+		return "zip"
+	case "application/gzip":
+		return "gz"
+	case "image/jpeg":
+		return "jpg"
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	case "video/mp4":
+		return "mp4"
+	case "audio/mpeg":
+		return "mp3"
+	default:
+		return "bin"
+	}
+}
+
+// ConvertToSilk 将音频数据(任意格式)通过ffmpeg转为PCM，再编码为SILK格式
+// 微信要求格式: \x02#!SILK_V3 开头 (tencent silk)
+// 如果输入已经是该格式，则直接返回
+// 返回: silkData, 时长(毫秒), error
+func ConvertToSilk(audioData []byte) ([]byte, int32, error) {
+	// 已经是tencent SILK格式 (\x02#!SILK_V3)，直接返回，时长未知设为0
+	if len(audioData) > 10 && audioData[0] == 0x02 && bytes.HasPrefix(audioData[1:], []byte("#!SILK_V3")) {
+		return audioData, 0, nil
+	}
+
+	// 先用ffmpeg将输入音频转为PCM (s16le, 16000Hz, mono)
+	cmd := exec.Command("ffmpeg",
+		"-i", "pipe:0",
+		"-f", "s16le",
+		"-ar", "16000",
+		"-ac", "1",
+		"pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(audioData)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, 0, fmt.Errorf("ffmpeg to pcm error: %v, details: %s", err, stderr.String())
+	}
+
+	pcmBytes := out.Bytes()
+	// 时长(ms) = pcm字节数 * 1000 / (采样率 * 通道数 * 每样本字节数)
+	durationMs := int32(int64(len(pcmBytes)) * 1000 / (16000 * 2))
+
+	// 尝试使用外部silk-encoder（和微信兼容性更好）
+	silkData, err := encodeSilkExternal(pcmBytes)
+	if err != nil {
+		// fallback: 使用go-silk库
+		silkData, err = silk.EncodePcmBuffToSilk(pcmBytes, 16000, 16000, true)
+		if err != nil {
+			return nil, 0, fmt.Errorf("encode silk error: %v", err)
+		}
+	}
+
+	return silkData, durationMs, nil
+}
+
+// encodeSilkExternal 使用外部pilk(Python)工具编码pcm->silk(和微信兼容)
+func encodeSilkExternal(pcmBytes []byte) ([]byte, error) {
+	tmpPcm, err := os.CreateTemp("", "voice_*.pcm")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmpPcm.Name())
+
+	if _, err := tmpPcm.Write(pcmBytes); err != nil {
+		tmpPcm.Close()
+		return nil, err
+	}
+	tmpPcm.Close()
+
+	tmpSilk := tmpPcm.Name() + ".silk"
+	defer os.Remove(tmpSilk)
+
+	pyScript := fmt.Sprintf(`import pilk; pilk.encode("%s", "%s", pcm_rate=16000, tencent=True)`, tmpPcm.Name(), tmpSilk)
+	cmd := exec.Command("python3", "-c", pyScript)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("pilk encode failed: %v, %s", err, stderr.String())
+	}
+	return os.ReadFile(tmpSilk)
+}
+
 // GetVideoDuration 使用ffprobe获取视频时长（秒）
 func GetVideoDuration(filePath string) (int32, error) {
 	cmd := exec.Command("ffprobe",

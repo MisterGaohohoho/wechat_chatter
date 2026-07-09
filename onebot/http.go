@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -49,13 +50,21 @@ func sendHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-		} else if v.Type == "image" || v.Type == "video" {
+		} else if v.Type == "image" || v.Type == "video" || v.Type == "record" || v.Type == "voice" || v.Type == "file" {
+			msgType := v.Type
+			if msgType == "record" || msgType == "voice" {
+				msgType = "voice"
+			}
+			// file: 走 iPad860 风格 uploadappattach 直传(不走 CDN)
+			if msgType == "file" {
+				msgType = "send_file_simple"
+			}
 			ch := make(chan error, 1)
 			msg := &SendMsg{
 				UserId:     req.UserID,
 				GroupID:    req.GroupID,
 				Content:    v.Data.File,
-				Type:       v.Type,
+				Type:       msgType,
 				ResultChan: ch,
 			}
 			msgChan <- msg
@@ -210,5 +219,42 @@ func jsonUnescapeString(s string) string {
 		return s
 	}
 	return result
+}
+
+// getFileExt 从文件名中提取扩展名(不含.)
+func getFileExt(fileName string) string {
+	idx := strings.LastIndex(fileName, ".")
+	if idx == -1 || idx == len(fileName)-1 {
+		return ""
+	}
+	return fileName[idx+1:]
+}
+
+// extractFileName 从路径或URL中提取文件名
+func extractFileName(s string) string {
+	if s == "" {
+		return ""
+	}
+	// 跳过 base64 数据
+	if strings.HasPrefix(s, "base64://") || strings.Contains(s, ";base64,") {
+		return ""
+	}
+	// URL 路径
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "file://") {
+		if u, err := url.Parse(s); err == nil {
+			p := u.Path
+			if idx := strings.LastIndex(p, "/"); idx != -1 {
+				return p[idx+1:]
+			}
+			return p
+		}
+	}
+	// 本地文件路径
+	if strings.Contains(s, "/") || strings.Contains(s, "\\") {
+		if idx := strings.LastIndexAny(s, "/\\"); idx != -1 {
+			return s[idx+1:]
+		}
+	}
+	return s
 }
 

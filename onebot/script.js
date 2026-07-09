@@ -93,6 +93,7 @@ function initAddresses() {
     setImmediate(setupSendTextMessageDynamic);
     setImmediate(setupSendFileMessageDynamic);
     setImmediate(setupSendFileUploadMessageDynamic);
+    setImmediate(setupSendAppAttachMessageDynamic);
     setImmediate(attachBlrX8Hook);
     setImmediate(AttachSendFunc);
     setImmediate(attachReq2buf);
@@ -332,6 +333,8 @@ var replyProtoHexGlobal = "";
 // 文件消息protobuf全局变量 (从Go直接传入hex编码)
 var fileProtoHexGlobal = "";
 var fileUploadProtoHexGlobal = "";
+// uploadappattach protobuf全局变量 (从Go直接传入hex编码)
+var appAttachProtoHexGlobal = "";
 
 // 文件消息全局变量
 var fileCgiAddr = ptr(0);
@@ -344,6 +347,11 @@ var uploadFileX1 = ptr(0);
 var fileUploadCgiAddr = ptr(0);
 var sendFileUploadMessageAddr = ptr(0);
 var fileUploadMessageAddr = ptr(0);
+
+// uploadappattach 全局变量
+var appAttachCgiAddr = ptr(0);
+var sendAppAttachMessageAddr = ptr(0);
+var appAttachMessageAddr = ptr(0);
 
 // 回复消息全局变量
 var replyMessageCallbackFunc;
@@ -362,7 +370,7 @@ function setupSendTextMessageDynamic() {
     textCgiAddr = Memory.alloc(128);
     sendTextMessageAddr = Memory.alloc(256);
     textMessageAddr = Memory.alloc(256);
-    textProtoDataAddr = Memory.alloc(4096);
+    textProtoDataAddr = Memory.alloc(64 * 1024); // 支持 50KB 分片(uploadappattach)的 protobuf
 
     // A. 写入字符串内容
     patchString(textCgiAddr, "/cgi-bin/micromsg-bin/newsendmsg");
@@ -452,6 +460,35 @@ function triggerSendFileUploadMessage(taskId, sender, receiver, protoHex, payloa
     return triggerSendMediaMessage(taskId, sender, receiver, protoHex, payloadHex, "fileupload");
 }
 
+// -------------------------uploadappattach分区-------------------------
+function setupSendAppAttachMessageDynamic() {
+    appAttachCgiAddr = Memory.alloc(128);
+    sendAppAttachMessageAddr = Memory.alloc(256);
+    appAttachMessageAddr = Memory.alloc(256);
+
+    patchString(appAttachCgiAddr, "/cgi-bin/micromsg-bin/uploadappattach");
+
+    sendAppAttachMessageAddr.add(0x00).writeU64(0);
+    sendAppAttachMessageAddr.add(0x08).writeU64(0);
+    sendAppAttachMessageAddr.add(0x10).writeU64(0);
+    sendAppAttachMessageAddr.add(0x18).writeU64(1);
+    sendAppAttachMessageAddr.add(0x20).writeU32(taskIdGlobal);
+    sendAppAttachMessageAddr.add(0x28).writePointer(appAttachMessageAddr);
+
+    appAttachMessageAddr.add(0x00).writePointer(fakeVtable);
+    appAttachMessageAddr.add(0x08).writeU32(taskIdGlobal);
+    appAttachMessageAddr.add(0x0c).writeU32(0x6e);
+    appAttachMessageAddr.add(0x10).writeU64(0x3);
+    appAttachMessageAddr.add(0x18).writePointer(appAttachCgiAddr);
+    appAttachMessageAddr.add(0x20).writeU64(0x25);
+    appAttachMessageAddr.add(0x28).writeU64(uint64("0x8000000000000030"));
+    appAttachMessageAddr.add(0x30).writeU64(uint64("0x0000000001010100"));
+}
+
+function triggerUploadAppAttach(taskId, sender, receiver, protoHex, payloadHex) {
+    return triggerSendMediaMessage(taskId, sender, receiver, protoHex, payloadHex, "appattach");
+}
+
 // -------------------------发送文件消息分区-------------------------
 
 
@@ -502,6 +539,8 @@ function attachBlrX8Hook() {
                 protoHex = fileProtoHexGlobal;
             } else if (sendMsgType === "fileupload") {
                 protoHex = fileUploadProtoHexGlobal;
+            } else if (sendMsgType === "appattach") {
+                protoHex = appAttachProtoHexGlobal;
             } else if (sendMsgType === "voice") {
                 protoHex = voiceProtoHexGlobal;
             }
@@ -586,6 +625,10 @@ function attachReq2buf() {
             } else if (sendMsgType === "fileupload") {
                 insertMsgAddr.writePointer(sendFileUploadMessageAddr);
                 console.log("[+] 发送fileUploadMsg成功! Req2Buf 已将 X24+0x60 指向新地址: " + sendFileUploadMessageAddr +
+                    "[+] Req2Buf 写入后内存预览: " + insertMsgAddr);
+            } else if (sendMsgType === "appattach") {
+                insertMsgAddr.writePointer(sendAppAttachMessageAddr);
+                console.log("[+] 发送uploadAppAttach成功! Req2Buf 已将 X24+0x60 指向新地址: " + sendAppAttachMessageAddr +
                     "[+] Req2Buf 写入后内存预览: " + insertMsgAddr);
             }
         }
@@ -723,6 +766,7 @@ function triggerSendMediaMessage(taskId, sender, receiver, protoHex, payloadHex,
         "voice": { messageAddr: voiceMessageAddr, sendMessageAddr: sendVoiceMessageAddr, cgiAddr: voiceCgiAddr, protoHexSetter: function(h) { voiceProtoHexGlobal = h; } },
         "file":  { messageAddr: fileMessageAddr,  sendMessageAddr: sendFileMessageAddr,  cgiAddr: fileCgiAddr,  protoHexSetter: function(h) { fileProtoHexGlobal = h; } },
         "fileupload": { messageAddr: fileUploadMessageAddr, sendMessageAddr: sendFileUploadMessageAddr, cgiAddr: fileUploadCgiAddr, protoHexSetter: function(h) { fileUploadProtoHexGlobal = h; } },
+        "appattach": { messageAddr: appAttachMessageAddr, sendMessageAddr: sendAppAttachMessageAddr, cgiAddr: appAttachCgiAddr, protoHexSetter: function(h) { appAttachProtoHexGlobal = h; } },
     };
 
     var info = msgAddrInfo[msgType];
@@ -998,6 +1042,7 @@ rpc.exports = {
     triggerSendFileMessage: triggerSendFileMessage,
     triggerSendFileUploadMessage: triggerSendFileUploadMessage,
     triggerUploadFile: triggerUploadFile,
+    triggerUploadAppAttach: triggerUploadAppAttach,
 };
 
 // -------------------------发送图片消息分区-------------------------

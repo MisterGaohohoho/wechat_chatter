@@ -141,6 +141,11 @@ func BuildSendPayload(taskId int64, msgType string) string {
 		payloadData[16] = 0x10
 		payloadData[28] = 0x27
 		payloadData[92] = 0x6E
+	case "appattach":
+		payloadData[0] = 0x6E
+		payloadData[16] = 0x10
+		payloadData[28] = 0x25
+		payloadData[92] = 0x6E
 	case "voice":
 		payloadData[0] = 0x6E
 		payloadData[16] = 0x10

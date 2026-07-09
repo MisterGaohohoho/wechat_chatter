@@ -61,7 +61,7 @@ func initFlag() {
 	flag.StringVar(&config.FridaGadgetAddr, "gadget_addr", "127.0.0.1:27042", "Gadget 地址: 127.0.0.1:27042 仅当 type 为 gadget 时有效")
 	flag.StringVar(&config.OnebotToken, "token", "MuseBot", "OneBot Token: MuseBot")
 	flag.StringVar(&config.ImagePath, "image_path", "", "图片路径: /Users/xxx/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/xxx/temp/xxx/2026-01/Img/")
-	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_9_58_mac.json", "微信配置文件路径: ../wechat_version/4_1_6_12_mac.json")
+	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_10_53_mac.json", "微信配置文件路径: ../wechat_version/4_1_6_12_mac.json")
 	flag.StringVar(&config.ConnType, "conn_type", "http", "连接类型: http | websocket")
 	flag.IntVar(&config.SendInterval, "send_interval", 1000, "发送间隔: ms")
 	flag.IntVar(&config.WechatPid, "wechat_pid", 0, "微信进程 PID，不设置则自动查找")
@@ -289,6 +289,39 @@ func loadJs() {
 							}
 							if videoId, ok := pMap["video_id"]; ok {
 								m.VideoId = videoId.(string)
+							}
+							if ch, ok := pendingResultMap.LoadAndDelete(targetId); ok {
+								m.ResultChan = ch.(chan error)
+							}
+							msgChan <- m
+						case "upload_voice_finish":
+							m := &SendMsg{
+								Type: "send_voice",
+							}
+							targetId := ""
+							if targetIdInter, ok := pMap["target_id"]; ok {
+								targetId = targetIdInter.(string)
+								if strings.Contains(targetId, "wxid_") {
+									m.UserId = targetId
+								} else {
+									m.GroupID = targetId
+								}
+							}
+							if cdnKey, ok := pMap["cdn_key"]; ok {
+								m.CdnKey = cdnKey.(string)
+							}
+							if aesKey, ok := pMap["aes_key"]; ok {
+								m.AesKey = aesKey.(string)
+							}
+							if voiceDuration, ok := pMap["voice_duration"]; ok {
+								if vd, ok := voiceDuration.(float64); ok {
+									m.VoiceDuration = int32(vd)
+								}
+							}
+							if silkDataLen, ok := pMap["silk_data_len"]; ok {
+								if sdl, ok := silkDataLen.(float64); ok {
+									m.SilkDataLen = int32(sdl)
+								}
 							}
 							if ch, ok := pendingResultMap.LoadAndDelete(targetId); ok {
 								m.ResultChan = ch.(chan error)

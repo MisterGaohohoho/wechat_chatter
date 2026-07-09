@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/frida/frida-go/frida"
 )
@@ -27,11 +28,18 @@ var (
 
 	config = &Config{}
 
-	userID2NicknameMap  sync.Map
-	userID2FileMsgMap   sync.Map
-	videoInfoMap        sync.Map // targetId -> *VideoInfo
-	buf2RespChan        = make(chan *Buf2RespData, 10)
+	userID2NicknameMap sync.Map
+	userID2FileMsgMap  sync.Map
+	videoInfoMap       sync.Map // targetId -> *VideoInfo
+	buf2RespChan       = make(chan *Buf2RespData, 10)
+	debugRespChan      = make(chan []byte, 1)
+	appAttachRespChan  = make(chan []byte, 1)
 )
+
+// NextVersion 获取当前taskId作为版本号
+func NextVersion() uint32 {
+	return uint32(atomic.LoadInt64(&taskId))
+}
 
 type WechatMessage struct {
 	GroupId     string     `json:"group_id"`
@@ -72,6 +80,10 @@ type SendMsg struct {
 
 	Duration  int32
 	VideoSize int32
+
+	VoiceDuration int32
+	SilkDataLen   int32
+	Unknown13     int32
 
 	ReferMsgId       string
 	ReferMsgSender   string

@@ -195,6 +195,126 @@ func SendWechatMsg(m *SendMsg) {
 			sendErr = errors.New("send reply failed")
 			return
 		}
+	case "voice":
+		// 直接base64解码，不追加salt（音频二进制不能被修改）
+		rawAudio, targetPath, err := SaveVoiceFile(m.Content)
+		if err != nil {
+			Error("保存语音文件失败", "err", err)
+			sendErr = err
+			return
+		}
+
+		// 转换为SILK格式
+		silkData, voiceDurationMs, err := ConvertToSilk(rawAudio)
+		if err != nil {
+			Error("转换SILK格式失败", "err", err)
+			sendErr = err
+			return
+		}
+
+		audioHex := hex.EncodeToString(silkData)
+
+		uploadPayloadHex := BuildVoiceUploadPayload()
+		result := fridaScript.ExportsCall("triggerUploadVoice", targetId, targetPath, uploadPayloadHex, audioHex, voiceDurationMs)
+		Info("📩 上传语音任务执行结果", "result", result, "target_id", targetId, "path", targetPath, "silk_len", len(silkData), "duration_ms", voiceDurationMs)
+		if result != "0" {
+			Error("上传语音失败", "target_id", targetId, "result", result)
+			sendErr = errors.New("upload voice failed")
+			return
+		}
+		if m.ResultChan != nil {
+			pendingResultMap.Store(targetId, m.ResultChan)
+			m.ResultChan = nil
+		}
+		return
+	case "send_voice":
+		protoHex, err := BuildVoiceMsgProto(myWechatId, targetId, m.CdnKey, m.AesKey, m.VoiceDuration, m.SilkDataLen, m.Unknown13)
+		if err != nil {
+			Error("构建语音protobuf失败", "err", err)
+			sendErr = err
+			return
+		}
+		payloadHex := BuildSendPayload(currTaskId, "voice")
+		result := fridaScript.ExportsCall("triggerSendVoiceMessage", currTaskId, myWechatId, targetId, protoHex, payloadHex)
+		Info("📩 发送语音任务执行结果", "result", result, "task_id", currTaskId, "wechat_id", myWechatId, "target_id", targetId, "unknown13", m.Unknown13)
+		if result != "1" {
+			Error("发送语音失败", "task_id", currTaskId, "target_id", targetId, "result", result)
+			sendErr = errors.New("send voice failed")
+			return
+		}
+	case "send_file_simple":
+		// iPad860 风格: uploadappattach 分片直传 → sendappmsg，不走 CDN。
+		// 文件名/扩展名由内容自动识别 + 时间戳随机生成(SaveBase64File 内部完成)。
+		targetPath, _, err := SaveBase64File(m.Content, "")
+		if err != nil {
+			Error("保存文件失败", "err", err)
+			sendErr = err
+			return
+		}
+
+		chunks, fileInfo, err := BuildUploadAppAttachChunks(targetId, targetPath)
+		if err != nil {
+			Error("构建uploadappattach分片失败", "err", err)
+			sendErr = err
+			return
+		}
+		Info("📩 开始uploadappattach直传", "target_id", targetId, "chunks", len(chunks),
+			"file_name", fileInfo.FileName, "file_ext", fileInfo.FileExt,
+			"total_len", fileInfo.TotalLen, "md5", fileInfo.Md5)
+
+		var attachId string
+		for i, chunkHex := range chunks {
+			chunkTaskId := atomic.AddInt64(&taskId, 1)
+			payloadHex := BuildSendPayload(chunkTaskId, "appattach")
+			result := fridaScript.ExportsCall("triggerUploadAppAttach", chunkTaskId, myWechatId, targetId, chunkHex, payloadHex)
+			if result != "1" {
+				Error("uploadappattach分片发送失败", "chunk", i, "result", result)
+				sendErr = errors.New("upload app attach chunk failed")
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				Error("等待uploadappattach响应超时", "chunk", i)
+				sendErr = errors.New("upload app attach timeout")
+				return
+			case data := <-appAttachRespChan:
+				id, perr := ParseUploadAppAttachResponse(data)
+				if perr != nil {
+					Error("解析uploadappattach响应失败", "chunk", i, "err", perr)
+					sendErr = perr
+					return
+				}
+				if id != "" {
+					attachId = id
+				}
+				Info("📩 uploadappattach分片完成", "chunk", i, "attach_id", id)
+			}
+		}
+
+		if attachId == "" {
+			Error("uploadappattach未返回attachId", "target_id", targetId)
+			sendErr = errors.New("upload app attach no attachId")
+			return
+		}
+		fileInfo.AttachId = attachId
+
+		// sendappmsg (type=6)，精简版 appmsg，cdnattachurl 也填 attachId
+		currTaskId = atomic.AddInt64(&taskId, 1)
+		protoHex, err := BuildSimpleFileMsgProto(myWechatId, targetId, fileInfo)
+		if err != nil {
+			Error("构建文件protobuf失败", "err", err)
+			sendErr = err
+			return
+		}
+		payloadHex := BuildSendPayload(currTaskId, "file")
+		result := fridaScript.ExportsCall("triggerSendFileMessage", currTaskId, myWechatId, targetId, protoHex, payloadHex)
+		Info("📩 发送文件消息(simple)执行结果", "result", result, "task_id", currTaskId, "target_id", targetId)
+		if result != "1" {
+			Error("发送文件失败(simple)", "task_id", currTaskId, "target_id", targetId, "result", result)
+			sendErr = errors.New("send file failed")
+			return
+		}
 	}
 
 	select {
@@ -380,6 +500,13 @@ func HandleBuf2Resp(msgType string, data []byte) {
 			Data:    data,
 			Err:     errors.New("response data is empty"),
 		}
+		return
+	}
+
+	switch msgType {
+	case "appattach":
+		Info("收到uploadappattach响应", "data_len", len(data))
+		appAttachRespChan <- data
 		return
 	}
 
