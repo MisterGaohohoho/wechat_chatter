@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -364,7 +366,7 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 				return nil, err
 			}
 
-			path, err := GetDownloadPath(fileMsg.Image.MidImgURL, fileMsg.Image.AesKey)
+			path, err := GetDownloadPath(fileMsg.Image.MidImgURL, fileMsg.Image.AesKey, "", 0)
 			if err != nil {
 				Error("获取文件路径失败", "err", err)
 				return nil, err
@@ -379,7 +381,8 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 				Error("XML解析失败", "err", err)
 				return nil, err
 			}
-			path, err := GetDownloadPath(fileMsg.AppMsg.AppAttach.CdnAttachURL, fileMsg.AppMsg.AppAttach.AesKey)
+			totalLen, _ := strconv.Atoi(strings.TrimSpace(fileMsg.AppMsg.AppAttach.TotalLen))
+			path, err := GetDownloadPath(fileMsg.AppMsg.AppAttach.CdnAttachURL, fileMsg.AppMsg.AppAttach.AesKey, fileMsg.AppMsg.AppAttach.FileExt, totalLen)
 			if err != nil {
 				Error("获取文件路径失败", "err", err)
 				return nil, err
@@ -393,7 +396,7 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 				Error("XML解析失败", "err", err)
 				return nil, err
 			}
-			path, err := GetDownloadPath(fileMsg.Video.CdnVideoUrl, fileMsg.Video.AesKey)
+			path, err := GetDownloadPath(fileMsg.Video.CdnVideoUrl, fileMsg.Video.AesKey, "mp4", int(fileMsg.Video.Length))
 			if err != nil {
 				Error("获取文件路径失败", "err", err)
 				return nil, err
@@ -435,52 +438,65 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func GetDownloadPath(cdnUrl, aesKeyStr string) (string, error) {
-	for i := 0; i < 10; i++ {
+func GetDownloadPath(cdnUrl, aesKeyStr, extHint string, totalLen int) (string, error) {
+	for i := 0; i < 30; i++ {
 		if downloadMsgInter, ok := userID2FileMsgMap.Load(cdnUrl); ok {
 			downloadReq := downloadMsgInter.(*DownloadRequest)
+
+			downloadReq.mu.Lock()
+
 			if downloadReq.FilePath != "" {
-				return downloadReq.FilePath, nil
+				fp := downloadReq.FilePath
+				downloadReq.mu.Unlock()
+				return fp, nil
 			}
 
 			// 检查数据是否还在接收中
 			timeSinceLastAppend := time.Now().UnixMilli() - downloadReq.LastAppendTime
 			Info("文件等待下载", "url", cdnUrl, "times", i, "last_append_time", timeSinceLastAppend)
 
-			// 如果数据仍在接收中（1秒内有新数据），继续等待
-			if timeSinceLastAppend < 1000 && i < 9 {
+			// 如果数据仍在接收中（3秒内有新数据），继续等待
+			if timeSinceLastAppend < 2000 && i < 29 {
+				downloadReq.mu.Unlock()
 				time.Sleep(2 * time.Second)
 				continue
 			}
 
 			// 数据接收完成，尝试解密
 			if len(downloadReq.Media) > 0 {
-				if len(downloadReq.Media)%aes.BlockSize != 0 {
-					Info("文件数据仍未对齐 AES 块，继续等待", "url", cdnUrl, "times", i, "media_len", len(downloadReq.Media), "block_size", aes.BlockSize)
-					if i < 9 {
-						time.Sleep(2 * time.Second)
-						continue
-					}
-					userID2FileMsgMap.Delete(cdnUrl)
-					return "", fmt.Errorf("文件数据长度不是 AES 块大小倍数: media_len=%d block_size=%d", len(downloadReq.Media), aes.BlockSize)
+				media := downloadReq.Media
+				// AES 块对不齐时，末尾补 0 到整块（微信 CDN 密文尾部可能带
+				// 非整块残余，补齐后按整块解密，避免丢字节）。
+				if rem := len(media) % aes.BlockSize; rem != 0 {
+					pad := aes.BlockSize - rem
+					Info("文件数据未对齐 AES 块，末尾补 0 到整块",
+						"url", cdnUrl, "media_len", len(media), "pad", pad, "block_size", aes.BlockSize)
+					padded := make([]byte, len(media)+pad)
+					copy(padded, media)
+					media = padded
 				}
 
 				aesKey, err := hex.DecodeString(aesKeyStr)
 				if err != nil {
+					downloadReq.mu.Unlock()
 					Error("AES key 解码失败", "err", err)
 					return "", err
 				}
-				filePath, err := GetFilePath(downloadReq.Media, aesKey)
+				filePath, err := GetFilePath(media, aesKey, extHint, totalLen)
 				if err != nil {
-					Error("获取文件路径失败", "err", err, "media_len", len(downloadReq.Media))
+					downloadReq.mu.Unlock()
+					Error("获取文件路径失败", "err", err, "media_len", len(media), "aes_key", aesKeyStr)
 					userID2FileMsgMap.Delete(cdnUrl)
 					return "", err
 				}
 
 				downloadReq.FilePath = filePath
 				downloadReq.Media = nil
+				downloadReq.mu.Unlock()
 				return filePath, nil
 			}
+
+			downloadReq.mu.Unlock()
 		}
 
 		time.Sleep(2 * time.Second)

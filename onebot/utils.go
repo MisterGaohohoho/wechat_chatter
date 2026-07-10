@@ -354,24 +354,39 @@ func SilkToMp3(silkBytes []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func GetFilePath(data []byte, key []byte) (string, error) {
+// GetFilePath 解密 CDN 数据并落盘。
+//   - extHint: 消息 XML 里的 fileext（如 "txt"），优先级最高——有就直接用它当扩展名，
+//     不再靠 magic bytes 猜（文本文件没有 magic，猜不出来）。
+//   - totalLen: 明文真实长度（消息里的 totallen）。>0 时按它截断，去掉 AES 补齐的尾部字节。
+func GetFilePath(data []byte, key []byte, extHint string, totalLen int) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
-	if len(data) == 0 || len(data)%block.BlockSize() != 0 {
-		return "", fmt.Errorf("invalid encrypted data length: %d, block_size: %d", len(data), block.BlockSize())
+	// 只解密对齐部分，丢弃末尾不足一个块的残余（调用方通常已补齐/截齐）。
+	bs := block.BlockSize()
+	aligned := len(data) - len(data)%bs
+	if aligned == 0 {
+		return "", fmt.Errorf("invalid encrypted data length: %d, block_size: %d", len(data), bs)
 	}
 
-	decrypted := make([]byte, len(data))
-	bs := block.BlockSize()
-	for i := 0; i < len(data); i += bs {
+	decrypted := make([]byte, aligned)
+	for i := 0; i < aligned; i += bs {
 		block.Decrypt(decrypted[i:i+bs], data[i:i+bs])
 	}
 
-	ext := DetectFileFormat(decrypted)
-	if ext == "unknown" {
-		return "", fmt.Errorf("无法解析的文件数据")
+	// 按真实长度截断，去掉补齐的尾部字节
+	if totalLen > 0 && totalLen <= len(decrypted) {
+		decrypted = decrypted[:totalLen]
+	}
+
+	// 扩展名：优先用消息里的 fileext，其次靠 magic 检测，都没有则存为 bin（不丢数据）
+	ext := strings.TrimPrefix(strings.ToLower(extHint), ".")
+	if ext == "" {
+		ext = DetectFileFormat(decrypted)
+		if ext == "unknown" {
+			ext = "bin"
+		}
 	}
 
 	return SaveFileToFile(ext, decrypted)

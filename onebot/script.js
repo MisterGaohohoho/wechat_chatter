@@ -135,7 +135,6 @@ function generateAESKey() {
 }
 
 const MAX_FRIDA_MESSAGE_BYTES = 4 * 1024 * 1024;
-const DOWNLOAD_CHUNK_BYTES = 256 * 1024;
 
 function isReadablePointer(addr) {
     try {
@@ -169,7 +168,7 @@ function readUtf8StringIfReadable(addr) {
         if (!isReadablePointer(addr)) {
             return "";
         }
-        return addr.readUtf8String(4096);
+        return addr.readUtf8String();
     } catch (e) {
         return "";
     }
@@ -190,23 +189,18 @@ function sendDownloadChunks(dataPtr, dataLen, fileId, cdnUrl) {
     if (!cdnUrl || dataLen <= 0) {
         return;
     }
-    const safeFileId = fileId || "";
 
-    for (let offset = 0; offset < dataLen; offset += DOWNLOAD_CHUNK_BYTES) {
-        const chunkLen = Math.min(DOWNLOAD_CHUNK_BYTES, dataLen - offset);
-        const buffer = readByteArrayIfReadable(dataPtr.add(offset), chunkLen);
-        if (!buffer) {
-            return;
-        }
-        const uint8Array = new Uint8Array(buffer);
+	if (dataLen > 0 && dataLen <= 10 * 1024 * 1024) {
+		var buffer = dataPtr.readByteArray(dataLen);
+		var uint8Array = new Uint8Array(buffer);
 
-        send({
-            type: "download",
-            media: Array.from(uint8Array),
-            file_id: safeFileId,
-            cdn_url: cdnUrl,
-        });
-    }
+		send({
+			type: "download",
+			media: Array.from(uint8Array),
+			file_id: fileId,
+			cdn_url: cdnUrl,
+		})
+	}
 }
 
 function fillUploadX1AndStart(idAddr, pathAddr, x1Buffer, receiver, md5, filePath, payloadHex) {
@@ -1059,14 +1053,15 @@ function setupDownloadFileDynamic() {
 
 
 function setReceiver() {
-    Interceptor.attach(buf2RespAddr, {
-        onEnter: function (args) {
-            // 通过 SP+0x140 读取当前 buf2resp 对应的 taskId
-            var respTaskId = this.context.sp.add(0x140).readS32();
+	Interceptor.attach(buf2RespAddr, {
+		onEnter: function (args) {
+			// 通过 SP+0x140 读取当前 buf2resp 对应的 taskId
+			var respTaskId = this.context.sp.add(0x140).readS32();
 			const currentPtr = this.context.x20;
 			const x2 = this.context.x0.toInt32();
-            if (!isReadablePointer(currentPtr)) {
-                return;
+            if (!isReadablePointer(currentPtr) || x2 < 4 || x2 > MAX_FRIDA_MESSAGE_BYTES) {
+                console.error("[-] buf2resp: pointer 不可读 或 x2 大小不正确, ptr=" + currentPtr + " x2=" + x2);
+				return;
             }
 
             // 判断是否是我们发送的消息的 ack
@@ -1092,14 +1087,7 @@ function setReceiver() {
 
 				pendingBuf2RespTaskId = 0;
 				pendingSendMsgType = "";
-            }
-
-            if (x2 < 4) {
-                return;
-            }
-            if (x2 > MAX_FRIDA_MESSAGE_BYTES) {
-                console.warn("[skip] protobuf_msg length out of range: " + x2);
-                return;
+				return
             }
 
             const mem = readByteArrayIfReadable(currentPtr, x2);

@@ -211,6 +211,8 @@ type DownloadRequest struct {
 	CDNURL         string `json:"cdn_url"`
 	LastAppendTime int64  `json:"last_append_time"`
 	FilePath       string `json:"file_path"`
+
+	mu sync.Mutex `json:"-"` // 保护 Media/LastAppendTime/FilePath 的并发读写
 }
 
 type ScriptMessage struct {
